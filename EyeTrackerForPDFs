@@ -1,0 +1,60 @@
+import cv2
+import numpy as np
+import pyautogui
+from scipy.spatial import distance
+
+# Initialize the face detector and landmark predictor
+face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+eye_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_eye.xml')
+
+def detect_gaze(eye_points):
+    # Calculate the center of the eye
+    center = np.mean(eye_points, axis=0).astype(int)
+    
+    # Calculate the vector from the eye center to the pupil
+    pupil = eye_points[0]  # Assuming the first point is the pupil
+    gaze_vector = pupil - center
+    
+    return gaze_vector
+
+def scroll_page(gaze_vector, threshold):
+    if gaze_vector[1] > threshold:
+        pyautogui.scroll(-50)  # Scroll down
+    elif gaze_vector[1] < -threshold:
+        pyautogui.scroll(50)  # Scroll up
+
+def main():
+    cap = cv2.VideoCapture(0)
+    scroll_threshold = 5
+
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        faces = face_cascade.detectMultiScale(gray, 1.3, 5)
+
+        for (x, y, w, h) in faces:
+            roi_gray = gray[y:y+h, x:x+w]
+            eyes = eye_cascade.detectMultiScale(roi_gray)
+            
+            for (ex, ey, ew, eh) in eyes:
+                eye_roi = roi_gray[ey:ey+eh, ex:ex+ew]
+                eye_points = cv2.goodFeaturesToTrack(eye_roi, 3, 0.01, 5)
+                
+                if eye_points is not None:
+                    eye_points = eye_points.reshape(-1, 2)
+                    gaze_vector = detect_gaze(eye_points)
+                    scroll_page(gaze_vector, scroll_threshold)
+
+        cv2.imshow('Eye-Tracking', frame)
+        
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            break
+
+    cap.release()
+    cv2.destroyAllWindows()
+
+if __name__ == "__main__":
+    main()
