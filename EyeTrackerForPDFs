@@ -1,35 +1,75 @@
 import cv2
 import numpy as np
 import pyautogui
-from scipy.spatial import distance
+import time
 
-# Initialize the face detector and landmark predictor
 face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
 eye_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_eye.xml')
 
-def detect_gaze(eye_points):
-    # Calculate the center of the eye
-    center = np.mean(eye_points, axis=0).astype(int)
-    
-    # Calculate the vector from the eye center to the pupil
-    pupil = eye_points[0]  # Assuming the first point is the pupil
-    gaze_vector = pupil - center
-    
-    return gaze_vector
+def detect_eyes(face_roi):
+    eyes = eye_cascade.detectMultiScale(face_roi, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30))
+    return eyes
 
-def scroll_page(gaze_vector, threshold):
-    if gaze_vector[1] > threshold:
-        pyautogui.scroll(-50)  # Scroll down
-    elif gaze_vector[1] < -threshold:
-        pyautogui.scroll(50)  # Scroll up
+def get_gaze_ratio(eye_frame):
+    height, width = eye_frame.shape[:2]
+    
+    # Use adaptive thresholding
+    eye_frame = cv2.equalizeHist(eye_frame)
+    _, threshold_eye = cv2.threshold(eye_frame, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    
+    # Divide the eye into three vertical sections
+    left_side = threshold_eye[:, 0:width//3]
+    center = threshold_eye[:, width//3:(2*width)//3]
+    right_side = threshold_eye[:, (2*width)//3:]
+    
+    # Count white pixels in each section
+    left_white = cv2.countNonZero(left_side)
+    center_white = cv2.countNonZero(center)
+    right_white = cv2.countNonZero(right_side)
+    
+    # Calculate gaze ratio
+    if left_white == 0:
+        gaze_ratio = 5
+    elif right_white == 0:
+        gaze_ratio = 0.2
+    else:
+        gaze_ratio = (left_white + center_white) / (right_white + center_white)
+    
+    return gaze_ratio
+
+def calibrate(cap):
+    print("Calibration: Look straight ahead and press 'c'")
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            print("Error: Cannot read from camera.")
+            return False
+        cv2.imshow("Calibration", frame)
+        if cv2.waitKey(1) & 0xFF == ord('c'):
+            break
+    cv2.destroyWindow("Calibration")
+    print("Calibration complete. You can now use eye-tracking to scroll.")
+    return True
 
 def main():
     cap = cv2.VideoCapture(0)
-    scroll_threshold = 5
+    if not cap.isOpened():
+        print("Error: Cannot open camera.")
+        return
+
+    if not calibrate(cap):
+        return
+    
+    scroll_threshold_up = 1.2
+    scroll_threshold_down = 0.8
+    last_scroll_time = time.time()
+    scroll_cooldown = 0.2
+    gaze_ratios = []
 
     while True:
         ret, frame = cap.read()
         if not ret:
+            print("Error: Cannot read frame.")
             break
 
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
@@ -37,16 +77,29 @@ def main():
 
         for (x, y, w, h) in faces:
             roi_gray = gray[y:y+h, x:x+w]
-            eyes = eye_cascade.detectMultiScale(roi_gray)
+            eyes = detect_eyes(roi_gray)
             
             for (ex, ey, ew, eh) in eyes:
-                eye_roi = roi_gray[ey:ey+eh, ex:ex+ew]
-                eye_points = cv2.goodFeaturesToTrack(eye_roi, 3, 0.01, 5)
+                eye = roi_gray[ey:ey+eh, ex:ex+ew]
+                gaze_ratio = get_gaze_ratio(eye)
+                gaze_ratios.append(gaze_ratio)
                 
-                if eye_points is not None:
-                    eye_points = eye_points.reshape(-1, 2)
-                    gaze_vector = detect_gaze(eye_points)
-                    scroll_page(gaze_vector, scroll_threshold)
+                if len(gaze_ratios) > 5:
+                    gaze_ratios.pop(0)
+                
+                avg_gaze_ratio = sum(gaze_ratios) / len(gaze_ratios)
+                
+                current_time = time.time()
+                if current_time - last_scroll_time > scroll_cooldown:
+                    if avg_gaze_ratio <= scroll_threshold_down:
+                        pyautogui.scroll(-40)  # Scroll down
+                        last_scroll_time = current_time
+                    elif avg_gaze_ratio >= scroll_threshold_up:
+                        pyautogui.scroll(40)  # Scroll up
+                        last_scroll_time = current_time
+
+                cv2.putText(frame, f"Gaze Ratio: {avg_gaze_ratio:.2f}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+                break  # Only process one eye
 
         cv2.imshow('Eye-Tracking', frame)
         
